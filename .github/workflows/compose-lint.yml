@@ -1,0 +1,17 @@
+name: Lint docker-compose (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      compose-file:
+        description: Path to the docker-compose file to validate
+        type: string
+        default: docker-compose.yaml
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file syntax
+        run: docker compose -f "${{ inputs.compose-file }}" config -q

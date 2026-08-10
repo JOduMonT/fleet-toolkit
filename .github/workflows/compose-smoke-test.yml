@@ -1,0 +1,61 @@
+name: Smoke test docker-compose (reusable)
+
+# Starts the stack standalone (no Coolify), waits for containers to settle, fails if any
+# container crashed after starting (this exact class of bug — a container that starts
+# clean and then exits a few seconds later — is why this check exists), and optionally
+# curls a health URL.
+
+on:
+  workflow_call:
+    inputs:
+      compose-file:
+        type: string
+        default: docker-compose.yaml
+      env-file:
+        description: Path to an .env file with dummy values for standalone startup
+        type: string
+        default: .env.example
+      health-url:
+        description: Optional URL to curl after startup; must return a 2xx/3xx status
+        type: string
+        default: ""
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the stack
+        run: |
+          cp "${{ inputs.env-file }}" .env
+          docker compose -f "${{ inputs.compose-file }}" up -d
+      - name: Wait for containers to settle
+        run: sleep 15
+      - name: Check every container is still running
+        run: |
+          set -euo pipefail
+          not_running=$(docker compose -f "${{ inputs.compose-file }}" ps --format '{{.Name}} {{.State}}' | grep -v ' running$' || true)
+          if [ -n "$not_running" ]; then
+            echo "These containers are not running:"
+            echo "$not_running"
+            docker compose -f "${{ inputs.compose-file }}" logs
+            exit 1
+          fi
+      - name: Check health URL responds
+        if: inputs.health-url != ''
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ inputs.health-url }}" || echo 000)
+            if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+              echo "OK: $code"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "health-url never returned 2xx/3xx"
+          docker compose -f "${{ inputs.compose-file }}" logs
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker compose -f "${{ inputs.compose-file }}" down -v
