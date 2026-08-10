@@ -1,5 +1,18 @@
 name: Trigger Coolify deploy (reusable)
 
+# Triggers a Coolify deploy AND waits for that specific deployment to reach a
+# terminal state before succeeding.
+#
+# Waiting matters: POST/GET /api/v1/deploy only QUEUES the deploy and returns
+# immediately. Echoing that queued response and moving on made this workflow
+# report success for deploys that later failed outright. Worse, the app-health
+# check that runs afterwards could not catch it either — when a deploy fails,
+# Coolify leaves the PREVIOUS container running, so the application keeps
+# reporting `running:healthy` and the whole pipeline went green on a failed
+# deploy. The deployment-level status is the only signal that distinguishes
+# "the new version is live" from "the new version failed and you are still
+# looking at the old one".
+
 on:
   workflow_call:
     inputs:
@@ -7,19 +20,94 @@ on:
         description: Coolify application UUID to deploy
         type: string
         required: true
+      timeout-seconds:
+        description: How long to wait for the deployment to reach a terminal state
+        type: number
+        default: 900
     secrets:
       coolify-url:
         required: true
       coolify-api-token:
         required: true
+    outputs:
+      deployment-uuid:
+        description: UUID of the deployment this run triggered
+        value: ${{ jobs.deploy.outputs.deployment-uuid }}
+      deployment-status:
+        description: Terminal status reported by Coolify for that deployment
+        value: ${{ jobs.deploy.outputs.deployment-status }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    outputs:
+      deployment-uuid: ${{ steps.trigger.outputs.deployment-uuid }}
+      deployment-status: ${{ steps.wait.outputs.deployment-status }}
     steps:
       - name: Trigger deployment
+        id: trigger
+        env:
+          COOLIFY_URL: ${{ secrets.coolify-url }}
+          COOLIFY_API_TOKEN: ${{ secrets.coolify-api-token }}
+          APP_UUID: ${{ inputs.app-uuid }}
         run: |
           set -euo pipefail
-          response=$(curl -sf -H "Authorization: Bearer ${{ secrets.coolify-api-token }}" \
-            "${{ secrets.coolify-url }}/api/v1/deploy?uuid=${{ inputs.app-uuid }}")
+          response=$(curl -sf -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            "$COOLIFY_URL/api/v1/deploy?uuid=$APP_UUID")
           echo "$response"
+
+          # Coolify answers {"deployments":[{"deployment_uuid":"..."}]}; accept a
+          # bare {"deployment_uuid":"..."} too rather than depending on one shape.
+          deployment_uuid=$(printf '%s' "$response" | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          if not isinstance(d, dict):
+              print("")
+          elif d.get("deployments"):
+              print(d["deployments"][0].get("deployment_uuid", ""))
+          else:
+              print(d.get("deployment_uuid", ""))
+          ')
+          if [ -z "$deployment_uuid" ]; then
+            echo "FAIL: could not read a deployment_uuid out of the trigger response."
+            echo "Without it there is no way to tell whether this deploy succeeded."
+            exit 1
+          fi
+          echo "Triggered deployment: $deployment_uuid"
+          echo "deployment-uuid=$deployment_uuid" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the deployment to finish
+        id: wait
+        env:
+          COOLIFY_URL: ${{ secrets.coolify-url }}
+          COOLIFY_API_TOKEN: ${{ secrets.coolify-api-token }}
+          DEPLOYMENT_UUID: ${{ steps.trigger.outputs.deployment-uuid }}
+          TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+        run: |
+          set -euo pipefail
+          interval=10
+          attempts=$(( TIMEOUT_SECONDS / interval ))
+          for i in $(seq 1 "$attempts"); do
+            status=$(curl -sf -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+              "$COOLIFY_URL/api/v1/deployments/$DEPLOYMENT_UUID" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
+            echo "[$i/$attempts] deployment $DEPLOYMENT_UUID: $status"
+            case "$status" in
+              finished)
+                echo "deployment-status=finished" >> "$GITHUB_OUTPUT"
+                echo "OK: deployment finished."
+                exit 0
+                ;;
+              failed|cancelled-by-user)
+                echo "deployment-status=$status" >> "$GITHUB_OUTPUT"
+                echo "FAIL: deployment ended as '$status'."
+                echo "Note the previous container may still be running and healthy —"
+                echo "the app being up does NOT mean this deploy succeeded."
+                exit 1
+                ;;
+            esac
+            sleep "$interval"
+          done
+          echo "deployment-status=timeout" >> "$GITHUB_OUTPUT"
+          echo "FAIL: deployment did not reach a terminal state within ${TIMEOUT_SECONDS}s."
+          exit 1
