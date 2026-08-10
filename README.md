@@ -1,7 +1,7 @@
 # fleet-toolkit
 
-Reusable GitHub Actions workflows shared across the jdmnt.co fleet's app and shared-infra
-repos. Two audiences:
+Reusable GitHub Actions workflows shared across this fleet's app and shared-infra repos. Two
+audiences:
 
 - **App-facing** — used by app/shared-infra repos directly:
   - `check-upstream-release.yml` — runs Renovate to open version-bump PRs. Caller needs a
