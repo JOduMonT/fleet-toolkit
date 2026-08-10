@@ -1,0 +1,44 @@
+name: Verify app healthy post-deploy (reusable)
+
+# Phase 0 scope: confirms the application is reported running by Coolify after a deploy.
+# Full backup-content verification (checksum a real backup file, test-restore it) is
+# Phase 4 scope and is not implemented here — this is a real, narrower check, not a stub.
+#
+# Polls rather than checking once: triggering a deploy only queues it (proven this session
+# — GET /api/v1/deploy?uuid= returns "queued" immediately, the actual deploy takes anywhere
+# from ~15s to a couple of minutes to reach a terminal state), so a caller that runs this
+# workflow right after trigger-coolify-deploy.yml needs it to wait for a real outcome, not
+# sample the in-between state.
+
+on:
+  workflow_call:
+    inputs:
+      app-uuid:
+        description: Coolify application UUID to check
+        type: string
+        required: true
+    secrets:
+      coolify-url:
+        required: true
+      coolify-api-token:
+        required: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll application status until running or timeout
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            status=$(curl -sf -H "Authorization: Bearer ${{ secrets.coolify-api-token }}" \
+              "${{ secrets.coolify-url }}/api/v1/applications/${{ inputs.app-uuid }}" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
+            echo "[$i] status: $status"
+            case "$status" in
+              running:*) echo "OK: application is running"; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "FAIL: application never reached 'running:*' status within the timeout"
+          exit 1

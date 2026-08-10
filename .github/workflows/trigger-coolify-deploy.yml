@@ -1,0 +1,25 @@
+name: Trigger Coolify deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      app-uuid:
+        description: Coolify application UUID to deploy
+        type: string
+        required: true
+    secrets:
+      coolify-url:
+        required: true
+      coolify-api-token:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger deployment
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -H "Authorization: Bearer ${{ secrets.coolify-api-token }}" \
+            "${{ secrets.coolify-url }}/api/v1/deploy?uuid=${{ inputs.app-uuid }}")
+          echo "$response"
