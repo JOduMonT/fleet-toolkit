@@ -27,18 +27,36 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Poll application status until running or timeout
+      - name: Poll application status until stably running or timeout
+        # A single running:* read is not enough: a crash-looping container can be sampled
+        # mid-restart and read as running for one poll, then die again seconds later —
+        # observed for real deploying metamcp, where a Postgres permission error caused a
+        # crash loop that a single-sample check reported as a false-positive success.
+        # Require 3 CONSECUTIVE running:* reads (30s stable) before declaring success; any
+        # non-running read resets the streak.
         run: |
           set -euo pipefail
+          consecutive=0
+          required=3
           for i in $(seq 1 24); do
             status=$(curl -sf -H "Authorization: Bearer ${{ secrets.coolify-api-token }}" \
               "${{ secrets.coolify-url }}/api/v1/applications/${{ inputs.app-uuid }}" \
               | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
-            echo "[$i] status: $status"
             case "$status" in
-              running:*) echo "OK: application is running"; exit 0 ;;
+              running:*)
+                consecutive=$((consecutive + 1))
+                echo "[$i] status: $status (consecutive: $consecutive/$required)"
+                if [ "$consecutive" -ge "$required" ]; then
+                  echo "OK: application has been running for $required consecutive checks"
+                  exit 0
+                fi
+                ;;
+              *)
+                echo "[$i] status: $status (resetting consecutive count)"
+                consecutive=0
+                ;;
             esac
             sleep 10
           done
-          echo "FAIL: application never reached 'running:*' status within the timeout"
+          echo "FAIL: application never reached $required consecutive running:* reads within the timeout"
           exit 1
