@@ -12,6 +12,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # config:recommended turns on Renovate's Dependency Dashboard, which is a
+      # GitHub issue. Without issues:write the run logs
+      # "WARN: Could not ensure issue / Error: integration-unauthorized"
+      # and the dashboard silently never appears.
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - name: Run Renovate
