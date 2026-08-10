@@ -19,3 +19,9 @@ jobs:
         with:
           configurationFile: renovate.json
           token: ${{ github.token }}
+        env:
+          # Without this Renovate has no repository list, logs
+          # "WARN: No repositories found - did you want to run with flag
+          # --autodiscover?", scans nothing, and still exits 0 — so the job went
+          # green while never once looking for an upstream release.
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
