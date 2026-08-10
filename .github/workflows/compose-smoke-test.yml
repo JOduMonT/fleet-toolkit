@@ -34,7 +34,11 @@ jobs:
       - name: Check every container is still running
         run: |
           set -euo pipefail
-          not_running=$(docker compose -f "${{ inputs.compose-file }}" ps --format '{{.Name}} {{.State}}' | grep -v ' running$' || true)
+          # `ps` without -a lists only RUNNING containers, so a container that
+          # starts and then crashes simply vanishes from the output and the grep
+          # finds nothing — the exact failure this step exists to catch. `-a`
+          # includes exited/created/restarting containers.
+          not_running=$(docker compose -f "${{ inputs.compose-file }}" ps -a --format '{{.Name}} {{.State}}' | grep -v ' running$' || true)
           if [ -n "$not_running" ]; then
             echo "These containers are not running:"
             echo "$not_running"
